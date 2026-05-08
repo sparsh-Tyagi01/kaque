@@ -14,7 +14,7 @@ func main() {
 
 	defer conn.Close()
 
-	msg := `{"topic": "chat", "value": "Hello there!, I am John Doe"}`
+	msg := `{"action": "Produce", "topic": "chat", "value": "Hello there!, I am John Doe"}`
 
 	conn.Write([]byte(msg + "\n"))
 

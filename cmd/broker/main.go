@@ -52,36 +52,47 @@ func handleConnection(conn net.Conn, b *broker.Broker)  {
 	for scanner.Scan() {
 		text := scanner.Text()
 
-		var input struct {
-			Topic string `json:"topic"`
-			Value string `json:"value"`
-		}
+		var req protocol.Request
 
-		err := json.Unmarshal([]byte(text), &input)
+		err := json.Unmarshal([]byte(text), &req)
 
 		if err != nil {
 			fmt.Println(err)
 			continue
 		}
 
-		t, err := b.GetTopic(input.Topic)
+		t, err := b.GetTopic(req.Topic)
 
 		if err != nil {
 			continue
 		}
 
-		msg := protocol.Message{
-			Value: []byte(input.Value),
-			Time: time.Now(),
+		if req.Action == "Produce" {
+			msg := protocol.Message{
+				Value: []byte(req.Value),
+				Time: time.Now(),
+			}
+
+			err = t.Partition[0].Append(msg)
+
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+
+			conn.Write([]byte("STORED\n"))
 		}
 
-		err = t.Partition[0].Append(msg)
+		if req.Action == "Consume" {
+			msgs, err := t.Partition[0].Read(req.Offset)
 
-		if err != nil {
-			fmt.Println(err)
-			continue
+			if err != nil {
+				continue
+			}
+
+			data, _ := json.Marshal(msgs)
+
+			conn.Write(append(data, '\n'))
 		}
-
-		conn.Write([]byte("OK\n"))
 	}
 }
