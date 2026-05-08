@@ -30,6 +30,7 @@ func NewPartition(id int, path string) (*Partition, error)  {
 		ID: id,
 		File: file,
 		Offset: 0,
+		Mutex: &sync.Mutex{},
 	}, nil
 }
 
