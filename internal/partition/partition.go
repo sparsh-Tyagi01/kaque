@@ -3,91 +3,87 @@ package partition
 import (
 	"bufio"
 	"encoding/json"
-	"io"
+	"fmt"
 	"os"
 	"sync"
 
 	"github.com/sparsh-Tyagi01/kaque/internal/protocol"
+	"github.com/sparsh-Tyagi01/kaque/internal/storage"
 )
 
 type Partition struct {
-	ID     int
-	File   *os.File
-	Offset int64
-	Mutex  *sync.Mutex
+    ID int
+    Segments []*storage.Segment
+    Active   *storage.Segment
+    Offset int64
+    Mutex sync.Mutex
 }
 
 func NewPartition(id int, path string) (*Partition, error) {
-	file, err := os.OpenFile(
+
+	segment, err := storage.NewSegment(
 		path,
-		os.O_APPEND|os.O_CREATE|os.O_RDWR,
-		0644,
+		0,
 	)
 
 	if err != nil {
 		return nil, err
 	}
 
-	// Continue offsets after restart by counting existing JSON lines.
-	// (Each appended message writes exactly one line.)
-	offset, err := countLines(path)
-	if err != nil {
-		_ = file.Close()
-		return nil, err
-	}
+	// offset, err := countLines(path)
 
 	return &Partition{
-		ID:     id,
-		File:   file,
-		Offset: offset,
-		Mutex:  &sync.Mutex{},
+		ID:       id,
+		Segments: []*storage.Segment{segment},
+		Active:   segment,
+		Offset:   0,
 	}, nil
 }
 
-func countLines(path string) (int64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
+// func countLines(path string) (int64, error) {
+// 	f, err := os.Open(path)
+// 	if err != nil {
+// 		return 0, err
+// 	}
+// 	defer f.Close()
 
-	var lines int64
-	buf := make([]byte, 32*1024)
-	var leftover []byte
+// 	var lines int64
+// 	buf := make([]byte, 32*1024)
+// 	var leftover []byte
 
-	for {
-		n, readErr := f.Read(buf)
-		if n > 0 {
-			chunk := append(leftover, buf[:n]...)
-			for i := 0; i < len(chunk); i++ {
-				if chunk[i] == '\n' {
-					lines++
-				}
-			}
-			// Keep trailing bytes after the last newline (if any)
-			lastNL := -1
-			for i := len(chunk) - 1; i >= 0; i-- {
-				if chunk[i] == '\n' {
-					lastNL = i
-					break
-				}
-			}
-			if lastNL == -1 {
-				leftover = chunk
-			} else {
-				leftover = chunk[lastNL+1:]
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return 0, readErr
-		}
-	}
+// 	for {
+// 		n, readErr := f.Read(buf)
+// 		if n > 0 {
+// 			chunk := append(leftover, buf[:n]...)
+// 			for i := 0; i < len(chunk); i++ {
+// 				if chunk[i] == '\n' {
+// 					lines++
+// 				}
+// 			}
 
-	return lines, nil
-}
+// 			lastNL := -1
+// 			for i := len(chunk) - 1; i >= 0; i-- {
+// 				if chunk[i] == '\n' {
+// 					lastNL = i
+// 					break
+// 				}
+// 			}
+// 			if lastNL == -1 {
+// 				leftover = chunk
+// 			} else {
+// 				leftover = chunk[lastNL+1:]
+// 			}
+// 		}
+// 		if readErr == io.EOF {
+// 			break
+// 		}
+// 		if readErr != nil {
+// 			return 0, readErr
+// 		}
+// 	}
+
+// 	return lines, nil
+// }
 
 func (p *Partition) Append(msg protocol.Message) error {
 	p.Mutex.Lock()
@@ -95,21 +91,29 @@ func (p *Partition) Append(msg protocol.Message) error {
 
 	msg.Offset = p.Offset
 
+	const MaxSegmentSize = 1024 * 1024
+
+	if p.Active.Size >= MaxSegmentSize {
+		err := p.RotateSegment()
+
+		if err != nil {
+			return err
+		}
+	}
+
 	data, err := json.Marshal(msg)
 
 	if err != nil {
 		return err
 	}
 
-	_, err = p.File.Write(
-		append(data, '\n'),
-	)
+	err = p.Active.Append(data)
 
 	if err != nil {
 		return err
 	}
 
-	p.Offset++
+	p.Active.NextOffset = p.Offset + 1
 
 	return nil
 }
@@ -118,33 +122,108 @@ func (p *Partition) Read(offset int64) ([]protocol.Message, error)  {
 	p.Mutex.Lock()
 	defer p.Mutex.Unlock()
 
-	file, err := os.Open(p.File.Name())
-
-	if err != nil {
-		return nil, err
-	}
-
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-
 	var messages []protocol.Message
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
-
-		var msg protocol.Message
-
-		err := json.Unmarshal(line, &msg)
-
-		if err != nil {
+	for _, segment := range p.Segments {
+		if segment.NextOffset <= offset {
 			continue
 		}
 
-		if msg.Offset >= offset {
-			messages = append(messages, msg)
+		msgs, err := p.readSegment(segment, offset)
+
+		if err != nil {
+			return nil, err
 		}
+
+		messages = append(messages, msgs...)
 	}
 
 	return messages, nil
+}
+
+func (p *Partition) RotateSegment() error {
+    baseOffset := p.Offset
+
+    path := fmt.Sprintf(
+        "data/chat-%d-%d.log",
+        p.ID,
+        baseOffset,
+    )
+
+    segment, err := storage.NewSegment(
+        path,
+        baseOffset,
+    )
+
+    if err != nil {
+        return err
+    }
+
+    p.Segments = append(
+        p.Segments,
+        segment,
+    )
+
+    p.Active = segment
+
+    return nil
+}
+
+func (p *Partition) Cleanup() {
+    if len(p.Segments) <= 1 {
+        return
+    }
+
+    old := p.Segments[0]
+
+    old.File.Close()
+
+    os.Remove(old.File.Name())
+
+    p.Segments = p.Segments[1:]
+}
+
+func (p *Partition) readSegment(
+    segment *storage.Segment,
+    offset int64,
+) ([]protocol.Message, error) {
+
+    file, err := os.Open(
+        segment.File.Name(),
+    )
+
+    if err != nil {
+        return nil, err
+    }
+
+    defer file.Close()
+
+    scanner := bufio.NewScanner(file)
+
+    var messages []protocol.Message
+
+    for scanner.Scan() {
+
+        line := scanner.Bytes()
+
+        var msg protocol.Message
+
+        err := json.Unmarshal(
+            line,
+            &msg,
+        )
+
+        if err != nil {
+            continue
+        }
+
+        if msg.Offset >= offset {
+            messages = append(
+                messages,
+                msg,
+            )
+        }
+    }
+
+    return messages, nil
 }
