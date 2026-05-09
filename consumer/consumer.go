@@ -14,11 +14,7 @@ func main() {
 
 	defer conn.Close()
 
-	req := `{
-		"action": "Consume",
-		"topic": "Chat",
-		"offset": 0
-	}`
+	req := `{ "action": "Consume", "topic": "chat", "offset": 0, "partition": 0 }`
 
 	conn.Write([]byte(req + "\n"))
 

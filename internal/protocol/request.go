@@ -5,4 +5,5 @@ type Request struct {
 	Topic string `json:"topic"`
 	Value string `json:"value"`
 	Offset int64 `json:"offset"`
+	Partition int `json:"partition"`
 }

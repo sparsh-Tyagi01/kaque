@@ -16,11 +16,13 @@ import (
 func main() {
 	b := broker.NewBroker()
 
-	p, _ := partition.NewPartition(0, "data/chat.log")
+	p0, _ := partition.NewPartition(0, "data/chat-0.log")
+	p1, _ := partition.NewPartition(1, "data/chat-1.log")
+	p2, _ := partition.NewPartition(2, "data/chat-2.log")
 
 	t := &topic.Topic{
 		Name: "chat",
-		Partition: []*partition.Partition{p},
+		Partitions: []*partition.Partition{p0,p1,p2},
 	}
 
 	b.CreateTopic("chat", t)
@@ -67,13 +69,16 @@ func handleConnection(conn net.Conn, b *broker.Broker)  {
 			continue
 		}
 
+		partitionIndex := broker.Hash(req.Value) % len(t.Partitions)
+
 		if req.Action == "Produce" {
 			msg := protocol.Message{
 				Value: []byte(req.Value),
 				Time: time.Now(),
 			}
 
-			err = t.Partition[0].Append(msg)
+			msg.Partition = t.Partitions[partitionIndex].ID
+			err = t.Partitions[partitionIndex].Append(msg)
 
 			if err != nil {
 				fmt.Println(err)
@@ -84,7 +89,7 @@ func handleConnection(conn net.Conn, b *broker.Broker)  {
 		}
 
 		if req.Action == "Consume" {
-			msgs, err := t.Partition[0].Read(req.Offset)
+			msgs, err := t.Partitions[req.Partition].Read(req.Offset)
 
 			if err != nil {
 				continue

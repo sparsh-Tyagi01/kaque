@@ -4,5 +4,5 @@ import "github.com/sparsh-Tyagi01/kaque/internal/partition"
 
 type Topic struct {
 	Name string
-	Partition []*partition.Partition
+	Partitions []*partition.Partition
 }
